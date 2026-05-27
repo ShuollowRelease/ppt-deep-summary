@@ -1,10 +1,3 @@
-"""
-PPTAnalyst - PPT 内容分析组件
-
-读取 PPTParser 输出的结构化数据，进行深度内容分析、语义提炼与大纲构建，
-输出可供用户审阅和干预的专业级分析大纲。
-"""
-
 import json
 from pathlib import Path
 from typing import Any
@@ -63,85 +56,91 @@ class PPTAnalystError(Exception):
 
 
 def validate_input(data: dict[str, Any]) -> None:
-    if not data:
-        raise PPTAnalystError("输入数据为空")
-    if "slides" not in data:
-        raise PPTAnalystError("输入数据缺少 slides 字段")
-    if not isinstance(data["slides"], list):
-        raise PPTAnalystError("slides 字段必须是数组")
+    if not data or "slides" not in data or not isinstance(data["slides"], list):
+        raise PPTAnalystError("输入数据无效，缺少 slides 数组")
 
 
 def extract_overview(data: dict[str, Any]) -> PresentationOverview:
-    overview = PresentationOverview(
-        title=data.get("presentation_title", "未知"),
-        total_slides=data.get("slide_count", 0)
-    )
-
-    themes: list[str] = []
-    for slide in data.get("slides", []):
-        if slide.get("title"):
-            themes.append(slide["title"])
-
-    overview.key_themes = themes
-
-    if themes:
-        overview.main_topic = themes[0] if themes else "未知主题"
-
-    return overview
+    themes = [s.get("title", "") for s in data.get("slides", []) if s.get("title")]
+    return PresentationOverview(title=data.get("presentation_title", "未知"), total_slides=data.get("slide_count", 0),
+                                main_topic=themes[0] if themes else "未知主题", key_themes=themes)
 
 
-def extract_key_points_from_slide(slide: dict[str, Any]) -> list[KeyPoint]:
+def summarize_slide_content(slide: dict[str, Any]) -> str:
+    num = slide.get("slide_number", 0)
+    title = slide.get("title", "")
+    texts = [t.get("text", "") for t in slide.get("texts", []) if t.get("text", "")]
+    tables = slide.get("tables", [])
+    charts = slide.get("charts", [])
+    notes = slide.get("notes", [])
+    images = slide.get("images", [])
+
+    summary_parts = []
+
+    if title:
+        summary_parts.append(f"主题：{title}")
+
+    if texts:
+        summary_parts.append(f"包含 {len(texts)} 条文本内容")
+
+    if tables:
+        total_rows = sum(t.get("row_count", 0) for t in tables)
+        total_cols = sum(t.get("col_count", 0) for t in tables)
+        summary_parts.append(f"包含 {len(tables)} 个表格（共 {total_rows} 行 × {total_cols} 列）")
+
+    if charts:
+        chart_types = [c.get("chart_type", "未知") for c in charts]
+        summary_parts.append(f"包含 {len(charts)} 个图表（类型：{', '.join(chart_types)}）")
+
+    if notes:
+        summary_parts.append(f"包含 {len(notes)} 条备注说明")
+
+    if images:
+        summary_parts.append(f"包含 {len(images)} 张图片")
+
+    if not summary_parts:
+        return f"Slide {num} 内容较少"
+
+    return f"Slide {num}：{'；'.join(summary_parts)}"
+
+
+def extract_key_points(slide: dict[str, Any]) -> list[KeyPoint]:
     points: list[KeyPoint] = []
-    slide_num = slide.get("slide_number", 0)
+    num = slide.get("slide_number", 0)
     title = slide.get("title", "")
 
     if title:
-        points.append(KeyPoint(
-            point=title,
-            supporting_data=f"Slide {slide_num} 标题",
-            source_slide=slide_num,
-            confidence="high"
-        ))
+        points.append(KeyPoint(point=title, supporting_data=f"Slide {num} 标题", source_slide=num, confidence="high"))
 
-    for text in slide.get("texts", []):
-        text_content = text.get("text", "")
-        if text_content and len(text_content) > 5:
-            points.append(KeyPoint(
-                point=text_content,
-                supporting_data=f"Slide {slide_num} 文本内容",
-                source_slide=slide_num,
-                confidence="high"
-            ))
+    texts = [t.get("text", "") for t in slide.get("texts", []) if t.get("text", "") and len(t.get("text", "")) > 5]
+    if texts:
+        if len(texts) == 1:
+            points.append(KeyPoint(point=texts[0], supporting_data=f"Slide {num} 核心文本", source_slide=num, confidence="high"))
+        else:
+            combined = "；".join(texts[:3])
+            if len(texts) > 3:
+                combined += f"等 {len(texts)} 条内容"
+            points.append(KeyPoint(point=combined, supporting_data=f"Slide {num} 文本摘要", source_slide=num, confidence="high"))
 
-    for table in slide.get("tables", []):
-        rows = table.get("rows", [])
-        if rows and len(rows) > 1:
-            header = " | ".join(rows[0]) if rows[0] else "表格数据"
-            points.append(KeyPoint(
-                point=f"表格数据: {header}",
-                supporting_data=f"Slide {slide_num} 表格 ({table.get('row_count', 0)}行x{table.get('col_count', 0)}列)",
-                source_slide=slide_num,
-                confidence="high"
-            ))
+    tables = slide.get("tables", [])
+    if tables:
+        total_rows = sum(t.get("row_count", 0) for t in tables)
+        total_cols = sum(t.get("col_count", 0) for t in tables)
+        points.append(KeyPoint(point=f"包含 {len(tables)} 个数据表格（共 {total_rows} 行 × {total_cols} 列）", supporting_data=f"Slide {num} 表格数据", source_slide=num, confidence="high"))
 
-    for chart in slide.get("charts", []):
-        chart_title = chart.get("title", "图表")
-        chart_type = chart.get("chart_type", "未知类型")
-        points.append(KeyPoint(
-            point=f"图表: {chart_title} ({chart_type})",
-            supporting_data=f"Slide {slide_num} 图表",
-            source_slide=slide_num,
-            confidence="medium"
-        ))
+    charts = slide.get("charts", [])
+    if charts:
+        chart_info = "、".join([f"{c.get('chart_type', '未知')}图表" for c in charts[:2]])
+        points.append(KeyPoint(point=f"包含 {len(charts)} 个图表：{chart_info}", supporting_data=f"Slide {num} 可视化数据", source_slide=num, confidence="medium"))
 
-    for note in slide.get("notes", []):
-        if note and len(note) > 3:
-            points.append(KeyPoint(
-                point=f"备注: {note}",
-                supporting_data=f"Slide {slide_num} 演讲备注",
-                source_slide=slide_num,
-                confidence="medium"
-            ))
+    notes = slide.get("notes", [])
+    if notes:
+        key_notes = [n for n in notes if len(n) > 10][:2]
+        if key_notes:
+            note_summary = "；".join(key_notes)
+            if len(notes) > 2:
+                note_summary += f"等 {len(notes)} 条备注"
+            points.append(KeyPoint(point=f"备注要点：{note_summary}", supporting_data=f"Slide {num} 演讲备注", source_slide=num, confidence="medium"))
 
     return points
 
@@ -149,161 +148,89 @@ def extract_key_points_from_slide(slide: dict[str, Any]) -> list[KeyPoint]:
 def build_outline(data: dict[str, Any]) -> list[Section]:
     sections: list[Section] = []
     slides = data.get("slides", [])
-
     if not slides:
         return sections
 
-    current_section = Section(section_id=1, title="概述")
     section_id = 1
+    current = Section(section_id=section_id, title="整体概述")
 
     for i, slide in enumerate(slides):
-        slide_title = slide.get("title", "")
-        slide_num = slide.get("slide_number", i + 1)
+        title = slide.get("title", "")
+        num = slide.get("slide_number", i + 1)
 
         if i == 0:
-            current_section.title = slide_title or "概述"
-            points = extract_key_points_from_slide(slide)
-            current_section.key_points.extend(points)
-        elif slide_title and any(kw in slide_title for kw in ["目录", "TOC", "Contents"]):
-            continue
-        elif slide_title and any(kw in slide_title for kw in ["总结", "Summary", "结论", "Conclusion", "Q&A"]):
-            if current_section.key_points:
-                sections.append(current_section)
+            current.title = title or "整体概述"
+        elif any(kw in title for kw in ["总结", "Summary", "结论", "Conclusion", "Q&A"]):
+            if current.key_points:
+                sections.append(current)
             section_id += 1
-            final_section = Section(section_id=section_id, title="总结与结论")
-            points = extract_key_points_from_slide(slide)
-            final_section.key_points.extend(points)
-            sections.append(final_section)
-            current_section = Section(section_id=section_id + 1)
+            final = Section(section_id=section_id, title="总结与结论", key_points=extract_key_points(slide))
+            sections.append(final)
+            current = Section(section_id=section_id + 1)
         else:
-            is_new_section = (
-                slide_num > 2 and
-                slide_title and
-                len(slide.get("texts", [])) < 5
-            )
+            if title and num > 2:
+                if current.key_points:
+                    sections.append(current)
+                    section_id += 1
+                current = Section(section_id=section_id, title=title)
+            elif not current.title and title:
+                current.title = title
 
-            if is_new_section and current_section.key_points:
-                sections.append(current_section)
-                section_id += 1
-                current_section = Section(section_id=section_id, title=slide_title)
-            else:
-                if not current_section.title and slide_title:
-                    current_section.title = slide_title
+        current.key_points.extend(extract_key_points(slide))
 
-            points = extract_key_points_from_slide(slide)
-            current_section.key_points.extend(points)
-
-    if current_section.key_points:
-        sections.append(current_section)
-
+    if current.key_points:
+        sections.append(current)
     return sections
 
 
 def analyze_insights(data: dict[str, Any], sections: list[Section]) -> Insights:
-    insights = Insights()
-
     slides = data.get("slides", [])
     warnings = data.get("warnings", [])
+    insights = Insights()
 
     if warnings:
-        insights.gaps.append(f"有 {len(warnings)} 页幻灯片解析失败，信息可能不完整")
-
-    has_tables = any(slide.get("tables") for slide in slides)
-    has_charts = any(slide.get("charts") for slide in slides)
-    has_notes = any(slide.get("notes") for slide in slides)
-
-    if has_tables:
-        insights.strengths.append("包含结构化表格数据，便于数据分析")
-    if has_charts:
-        insights.strengths.append("包含可视化图表，直观展示数据趋势")
-    if has_notes:
-        insights.strengths.append("包含演讲备注，提供额外上下文信息")
-
-    total_points = sum(len(s.key_points) for s in sections)
-    if total_points < 5:
-        insights.gaps.append("内容要点较少，可能需要补充更多细节")
-
-    if not has_tables and not has_charts:
-        insights.recommendations.append("建议添加数据图表以增强说服力")
-
-    if not has_notes:
-        insights.recommendations.append("建议添加演讲备注以补充说明")
-
+        insights.gaps.append(f"有 {len(warnings)} 页解析失败")
+    if any(s.get("tables") for s in slides):
+        insights.strengths.append("包含结构化表格数据")
+    if any(s.get("charts") for s in slides):
+        insights.strengths.append("包含可视化图表")
+    if any(s.get("notes") for s in slides):
+        insights.strengths.append("包含演讲备注")
+    if sum(len(s.key_points) for s in sections) < 5:
+        insights.gaps.append("内容要点较少")
+    if not any(s.get("tables") for s in slides) and not any(s.get("charts") for s in slides):
+        insights.recommendations.append("建议添加数据图表")
     return insights
 
 
 def check_warnings(data: dict[str, Any]) -> list[str]:
-    warnings: list[str] = []
-
-    for warning in data.get("warnings", []):
-        warnings.append(warning)
-
-    slides = data.get("slides", [])
-    for slide in slides:
-        slide_num = slide.get("slide_number", 0)
-        if not slide.get("texts") and not slide.get("tables") and not slide.get("charts"):
-            warnings.append(f"Slide {slide_num} 内容为空")
-
+    warnings = list(data.get("warnings", []))
+    for slide in data.get("slides", []):
+        if not any([slide.get("texts"), slide.get("tables"), slide.get("charts")]):
+            warnings.append(f"Slide {slide.get('slide_number', 0)} 内容为空")
     return warnings
 
 
 def analyze(data: dict[str, Any]) -> AnalysisResult:
     validate_input(data)
-
-    result = AnalysisResult()
-
-    result.presentation_overview = extract_overview(data)
-
-    result.outline = build_outline(data)
-
-    result.insights = analyze_insights(data, result.outline)
-
-    result.warnings = check_warnings(data)
-
-    result.metadata = AnalysisMetadata(
-        analysis_timestamp=datetime.now().isoformat(),
-        requires_user_review=True
-    )
-
-    return result
+    outline = build_outline(data)
+    return AnalysisResult(presentation_overview=extract_overview(data), outline=outline,
+                          insights=analyze_insights(data, outline), warnings=check_warnings(data),
+                          metadata=AnalysisMetadata(analysis_timestamp=datetime.now().isoformat(), requires_user_review=True))
 
 
 def to_dict(result: AnalysisResult) -> dict[str, Any]:
-    def section_to_dict(section: Section) -> dict[str, Any]:
-        return {
-            "section_id": section.section_id,
-            "title": section.title,
-            "key_points": [
-                {
-                    "point": p.point,
-                    "supporting_data": p.supporting_data,
-                    "source_slide": p.source_slide,
-                    "confidence": p.confidence
-                }
-                for p in section.key_points
-            ],
-            "sub_sections": [section_to_dict(s) for s in section.sub_sections]
-        }
+    def sec_dict(s: Section) -> dict[str, Any]:
+        return {"section_id": s.section_id, "title": s.title,
+                "key_points": [{"point": p.point, "supporting_data": p.supporting_data, "source_slide": p.source_slide, "confidence": p.confidence} for p in s.key_points],
+                "sub_sections": [sec_dict(sub) for sub in s.sub_sections]}
 
     return {
-        "presentation_overview": {
-            "title": result.presentation_overview.title,
-            "total_slides": result.presentation_overview.total_slides,
-            "main_topic": result.presentation_overview.main_topic,
-            "key_themes": result.presentation_overview.key_themes
-        },
-        "outline": {
-            "sections": [section_to_dict(s) for s in result.outline]
-        },
-        "insights": {
-            "strengths": result.insights.strengths,
-            "gaps": result.insights.gaps,
-            "recommendations": result.insights.recommendations
-        },
-        "metadata": {
-            "analysis_timestamp": result.metadata.analysis_timestamp,
-            "requires_user_review": result.metadata.requires_user_review
-        },
+        "presentation_overview": {"title": result.presentation_overview.title, "total_slides": result.presentation_overview.total_slides,
+                                  "main_topic": result.presentation_overview.main_topic, "key_themes": result.presentation_overview.key_themes},
+        "outline": {"sections": [sec_dict(s) for s in result.outline]},
+        "insights": {"strengths": result.insights.strengths, "gaps": result.insights.gaps, "recommendations": result.insights.recommendations},
+        "metadata": {"analysis_timestamp": result.metadata.analysis_timestamp, "requires_user_review": result.metadata.requires_user_review},
         "warnings": result.warnings
     }
 
@@ -314,43 +241,25 @@ def to_json(result: AnalysisResult, indent: int = 2) -> str:
 
 def analyze_from_file(input_path: str | Path, output_path: str | Path | None = None) -> AnalysisResult:
     input_path = Path(input_path)
-
     if not input_path.exists():
-        raise PPTAnalystError(f"输入文件不存在: {input_path}")
-
-    try:
-        with open(input_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except json.JSONDecodeError as e:
-        raise PPTAnalystError(f"JSON 解析失败: {e}")
-
+        raise PPTAnalystError(f"文件不存在: {input_path}")
+    with open(input_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
     result = analyze(data)
-
     if output_path:
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(to_json(result), encoding='utf-8')
-
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text(to_json(result), encoding='utf-8')
     return result
 
 
 if __name__ == "__main__":
     import sys
-
     if len(sys.argv) < 2:
-        print("用法: python ppt_analyst.py <parsed_data.json> [output_outline.json]")
+        print("用法: python ppt_analyst.py <parsed.json> [output.json]")
         sys.exit(1)
-
-    input_file = sys.argv[1]
-    output_file = sys.argv[2] if len(sys.argv) > 2 else None
-
     try:
-        result = analyze_from_file(input_file, output_file)
+        result = analyze_from_file(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
         print(to_json(result))
-        if result.warnings:
-            print("\nWarnings:", file=sys.stderr)
-            for w in result.warnings:
-                print(f"  - {w}", file=sys.stderr)
     except PPTAnalystError as e:
         print(json.dumps({"status": "error", "reason": str(e)}))
         sys.exit(1)
