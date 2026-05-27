@@ -6,13 +6,13 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from ppt_parser import parse, to_json, to_markdown, PPTParserError
 
 
 def test_ppt_parser():
-    test_file = Path(__file__).parent.parent.parent / "test.pptx"
+    test_file = Path(__file__).parent.parent.parent.parent / "test.pptx"
 
     if not test_file.exists():
         print(f"[SKIP] 测试文件不存在: {test_file}")
